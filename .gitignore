@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+results/
+board/thermal_contrast_check.png
+.DS_Store

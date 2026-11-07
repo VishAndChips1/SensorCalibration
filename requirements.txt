@@ -1,0 +1,17 @@
+# On a machine with ROS2 already installed (e.g. this project's Pi), only
+# these are needed on top of it -- rosbag2_py/rclpy/sensor_msgs come from
+# the ROS2 install itself, not pip:
+numpy
+opencv-python>=4.6
+pyyaml
+matplotlib
+
+# On a machine WITHOUT ROS2 (e.g. a laptop), also install:
+#   pip install rosbags
+# and swap calibration/common/bag_reader.py's rosbag2_py-based reader for
+# rosbags.rosbag2.Reader + rosbags.serde.deserialize_cdr -- same
+# (topic, msg, timestamp) shape. Not wired up by default: it was designed
+# but could not be installed/tested on the Pi this repo was built on (no
+# python3-venv, no passwordless sudo to add it) -- see bag_reader.py's
+# docstring. If you're on a non-ROS machine, this is the first thing to
+# finish wiring up.

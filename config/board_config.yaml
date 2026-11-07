@@ -1,0 +1,33 @@
+# Single source of truth for the calibration board's geometry.
+#
+# IMPORTANT: this file is read by BOTH board/generate_charuco_board.py (to
+# print the board) and every calibration/*.py script (to interpret detected
+# corners). If you print a board with different numbers here, your
+# calibration will silently come out at the wrong physical scale -- there is
+# no way to detect that mistake from the image alone, so treat this file as
+# the one thing that must never drift out of sync with the physical board.
+#
+# A ChArUco board is a standard chessboard where every other square is
+# replaced by a unique ArUco marker. This combines the two easiest-to-detect
+# calibration patterns into one target: ArUco markers are detected reliably
+# even at an angle or partially occluded (good for giving LiDAR a clear
+# target footprint), while the chessboard corners between them give
+# sub-pixel-accurate 2D points for camera calibration (ArUco corners alone
+# are much less precise). OpenCV's aruco module detects both in one pass.
+
+squares_x: 7          # number of chessboard squares, horizontal
+squares_y: 5           # number of chessboard squares, vertical
+square_length_m: 0.040  # physical length of one chessboard square, metres
+marker_length_m: 0.030  # physical length of one ArUco marker, metres (must
+                         # be smaller than square_length_m -- OpenCV centres
+                         # the marker inside its square with a white margin)
+dictionary: DICT_5X5_100  # ArUco dictionary. 5x5 bits is a reasonable
+                           # default: more robust to blur/low-res than 4x4,
+                           # without needing the extra board space 6x6/7x7
+                           # dictionaries want. Must match on both ends.
+
+# Printed board's total physical size, for reference when printing/mounting
+# (computed, not independently specified -- do not edit by hand, derive it
+# if you change squares_x/y or square_length_m):
+#   width  = squares_x * square_length_m = 0.280 m
+#   height = squares_y * square_length_m = 0.200 m

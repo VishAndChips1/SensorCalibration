@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""LiDAR-to-camera extrinsic calibration via plane correspondences (Zhang &
+Pless 2004 -- see common/plane_extrinsic_solver.py for the method and a
+from-scratch derivation/verification of the math). Takes one bag PER BOARD
+POSE (the close/far/left/right/centre protocol this repo's capture script
+produces is exactly the right shape of input -- different positions
+naturally vary the board's distance and angle, which is what the solver
+needs to be well-constrained) and solves for the single rigid transform
+that's consistent across all of them.
+
+Usage:
+    lidar_camera_extrinsic.py <rgb_intrinsics.yaml> <output.yaml> \\
+        --bag close.mcap:/landfill/rgb/image_raw:/landfill/livox/points \\
+        --bag far.mcap:/landfill/rgb/image_raw:/landfill/livox/points \\
+        --bag left.mcap:... --bag right.mcap:... --bag centre.mcap:...
+        [--board config/board_config.yaml]
+        [--lidar-min-range 1.0] [--lidar-max-range 6.0]
+        [--preview out_dir]
+
+Each --bag is "path:rgb_topic:lidar_topic". Needs >=3 bags; 5 (the default
+capture protocol) gives a better-constrained, more robust solve than the
+minimum.
+"""
+import argparse
+import os
+import sys
+
+import cv2
+import numpy as np
+import yaml
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'common'))
+from charuco_compat import load_board_and_dictionary, detect_charuco  # noqa: E402
+from bag_reader import read_bag, image_msg_to_numpy, pointcloud2_to_xyz  # noqa: E402
+from plane_extrinsic_solver import fit_plane_ransac, solve_extrinsic_from_plane_correspondences  # noqa: E402
+
+
+def board_pose_from_image(gray, board, dictionary, camera_matrix, dist_coeffs):
+    """Returns (normal_cam, d_cam, rvec, tvec) for the board's plane in the
+    camera frame, from the first good detection found, or None if nothing
+    usable was detected."""
+    corners, ids, _mc, _mi = detect_charuco(gray, board, dictionary)
+    if corners is None or ids is None or len(ids) < 6:
+        return None
+    all_board_pts = np.array(board.getChessboardCorners())
+    obj_pts = all_board_pts[ids.flatten()]
+    ok, rvec, tvec = cv2.solvePnP(obj_pts, corners, camera_matrix, dist_coeffs)
+    if not ok:
+        return None
+    R_board_to_cam, _ = cv2.Rodrigues(rvec)
+    normal_cam = R_board_to_cam @ np.array([0, 0, 1.0])  # board's local +Z, into camera frame
+    tvec = tvec.flatten()
+    d_cam = normal_cam @ tvec
+    return normal_cam, d_cam, rvec, tvec
+
+
+def lidar_plane_in_roi(points, min_range, max_range, board_area_m2, rng):
+    """Crop to a distance ROI, RANSAC-fit the dominant plane, and sanity-
+    check its inlier footprint is plausibly board-sized (not e.g. a wall
+    that happened to be in range) -- warns rather than silently trusting
+    an implausible result."""
+    ranges = np.linalg.norm(points, axis=1)
+    roi = points[(ranges > min_range) & (ranges < max_range)]
+    if len(roi) < 10:
+        raise ValueError(f'only {len(roi)} LiDAR points in the {min_range}-{max_range}m ROI -- '
+                          'widen --lidar-min-range/--lidar-max-range or check the board was '
+                          'actually in the scene for this capture')
+    normal, d, inliers = fit_plane_ransac(roi, inlier_threshold_m=0.02, rng=rng)
+    inlier_pts = roi[inliers]
+    extent = inlier_pts.max(axis=0) - inlier_pts.min(axis=0)
+    footprint_estimate = np.sort(extent)[-1] * np.sort(extent)[-2]  # two largest extents
+    if footprint_estimate > board_area_m2 * 6 or footprint_estimate < board_area_m2 * 0.15:
+        print(f'  WARNING: dominant-plane inlier footprint ~{footprint_estimate:.2f}m^2 is a poor '
+              f'match for the board\'s ~{board_area_m2:.2f}m^2 -- this may have fit a wall/floor '
+              'instead of the board. Tighten --lidar-min-range/--lidar-max-range for this pose, '
+              'or check --preview.')
+    return normal, d, inlier_pts
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('rgb_intrinsics_yaml')
+    ap.add_argument('output_yaml')
+    ap.add_argument('--bag', action='append', required=True,
+                     help='path:rgb_topic:lidar_topic, repeat for each pose (>=3 required)')
+    ap.add_argument('--board', default=os.path.join(os.path.dirname(__file__), '..', 'config', 'board_config.yaml'))
+    ap.add_argument('--lidar-min-range', type=float, default=1.0)
+    ap.add_argument('--lidar-max-range', type=float, default=6.0)
+    ap.add_argument('--preview', default=None, help='directory to save per-pose plane-fit plots')
+    args = ap.parse_args()
+
+    with open(args.board) as f:
+        board_cfg = yaml.safe_load(f)
+    board, dictionary = load_board_and_dictionary(board_cfg)
+    board_area_m2 = (board_cfg['squares_x'] * board_cfg['square_length_m']) * \
+                    (board_cfg['squares_y'] * board_cfg['square_length_m'])
+
+    with open(args.rgb_intrinsics_yaml) as f:
+        intr = yaml.safe_load(f)
+    camera_matrix = np.array(intr['camera_matrix'])
+    dist_coeffs = np.array(intr['distortion_coefficients'])
+
+    if len(args.bag) < 3:
+        print(f'FAILED: need >=3 poses, got {len(args.bag)}')
+        sys.exit(1)
+
+    rng = np.random.default_rng(0)
+    normals_lidar, d_lidar, normals_cam, d_cam, pose_names = [], [], [], [], []
+
+    if args.preview:
+        os.makedirs(args.preview, exist_ok=True)
+
+    for spec in args.bag:
+        bag_path, rgb_topic, lidar_topic = spec.split(':', 2)
+        pose_name = os.path.basename(bag_path.rstrip('/'))
+        print(f'-- pose "{pose_name}" ({bag_path}) --')
+
+        cam_result = None
+        lidar_points = None
+        for topic, msg, _t in read_bag(bag_path, topics=[rgb_topic, lidar_topic]):
+            if topic == rgb_topic and cam_result is None:
+                img = image_msg_to_numpy(msg)
+                gray = img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                cam_result = board_pose_from_image(gray, board, dictionary, camera_matrix, dist_coeffs)
+            elif topic == lidar_topic and lidar_points is None:
+                lidar_points = pointcloud2_to_xyz(msg)
+            if cam_result is not None and lidar_points is not None:
+                break
+
+        if cam_result is None:
+            print(f'  SKIPPED: no ChArUco board detected on {rgb_topic} in this bag')
+            continue
+        if lidar_points is None:
+            print(f'  SKIPPED: no LiDAR message found on {lidar_topic} in this bag')
+            continue
+
+        nc, dc, rvec, tvec = cam_result
+        try:
+            nl, dl, inlier_pts = lidar_plane_in_roi(
+                lidar_points, args.lidar_min_range, args.lidar_max_range, board_area_m2, rng)
+        except ValueError as e:
+            print(f'  SKIPPED: {e}')
+            continue
+
+        if args.preview:
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+            fig = plt.figure(figsize=(6, 5))
+            ax = fig.add_subplot(111, projection='3d')
+            ax.scatter(inlier_pts[:, 0], inlier_pts[:, 1], inlier_pts[:, 2], s=2)
+            ax.set_xlabel('x (m)'); ax.set_ylabel('y (m)'); ax.set_zlabel('z (m)')
+            plt.savefig(os.path.join(args.preview, f'{pose_name}_lidar_plane.png'), dpi=150)
+            plt.close()
+
+        print(f'  camera distance to board: {np.linalg.norm(tvec):.2f}m, '
+              f'LiDAR plane: {len(inlier_pts)} inliers')
+        normals_cam.append(nc); d_cam.append(dc)
+        normals_lidar.append(nl); d_lidar.append(dl)
+        pose_names.append(pose_name)
+
+    if len(normals_lidar) < 3:
+        print(f'FAILED: only {len(normals_lidar)} usable poses out of {len(args.bag)} -- need >=3')
+        sys.exit(1)
+
+    R, t, angular_residuals_deg = solve_extrinsic_from_plane_correspondences(
+        normals_lidar, d_lidar, normals_cam, d_cam)
+
+    rvec_out, _ = cv2.Rodrigues(R)
+    roll, pitch, yaw = cv2.RQDecomp3x3(R)[0]  # degrees
+
+    T = np.eye(4)
+    T[:3, :3] = R
+    T[:3, 3] = t
+
+    result = {
+        'rotation_matrix': R.tolist(),
+        'translation_m': t.tolist(),
+        'transform_4x4': T.tolist(),
+        'rotation_rpy_deg': [float(roll), float(pitch), float(yaw)],
+        'n_poses_used': len(pose_names),
+        'poses_used': pose_names,
+        'angular_residuals_deg': [float(x) for x in angular_residuals_deg],
+        'note': 'Maps a LiDAR-frame point p_L to the camera frame via p_C = R @ p_L + t. '
+                'angular_residuals_deg is how well each pose\'s plane normal aligned after '
+                'solving -- large outliers there point at which specific pose had a bad '
+                'detection or plane fit, worth re-checking with --preview before trusting '
+                'the result.',
+    }
+    with open(args.output_yaml, 'w') as f:
+        yaml.safe_dump(result, f, default_flow_style=False)
+
+    print(f'\nUsed {len(pose_names)}/{len(args.bag)} poses: {pose_names}')
+    print(f'Angular residuals (deg): {[round(float(x),2) for x in angular_residuals_deg]} '
+          f'-- large values flag a specific bad pose, not necessarily a bad overall result')
+    print(f'Translation (m): {t.round(4)}')
+    print(f'Rotation (deg, roll/pitch/yaw): {roll:.2f}, {pitch:.2f}, {yaw:.2f}')
+    print(f'Wrote {args.output_yaml}')
+
+
+if __name__ == '__main__':
+    main()
