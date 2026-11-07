@@ -29,13 +29,13 @@ import numpy as np
 import yaml
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'common'))
-from charuco_compat import load_board_and_dictionary, detect_charuco  # noqa: E402
-from bag_reader import read_bag, image_msg_to_numpy  # noqa: E402
+from charuco_compat import load_board_and_dictionary, detect_charuco, get_chessboard_corners  # noqa: E402
+from bag_reader import read_bag, image_msg_to_numpy, normalize_to_u8  # noqa: E402
 import custom_board  # noqa: E402
 
 
 def to_gray(img):
-    return img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    return normalize_to_u8(img) if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
 
 def main():
@@ -61,7 +61,7 @@ def main():
         with open(args.board) as f:
             cfg = yaml.safe_load(f)
         board, dictionary = load_board_and_dictionary(cfg)
-        board_object_points = np.array(board.getChessboardCorners())
+        board_object_points = get_chessboard_corners(board)
     else:
         dictionary, layout = custom_board.load_layout(args.custom_layout)
 

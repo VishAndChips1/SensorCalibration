@@ -69,8 +69,21 @@ def calibrate_camera_charuco(all_charuco_corners, all_charuco_ids, board, image_
         all_charuco_corners, all_charuco_ids, board, image_size, None, None)
 
 
+def get_chessboard_corners(board):
+    """All of the board's interior chessboard-corner 3D points (z=0 plane),
+    indexed by charuco corner id. OpenCV 4.6 (legacy, verified against real
+    data) exposes this as a `.chessboardCorners` attribute, not a method --
+    `board.getChessboardCorners()` looks like the right name by analogy
+    with the rest of this API but doesn't exist and raises AttributeError.
+    Not verified which form 4.7+'s new API uses; falls back to trying the
+    method form too."""
+    if hasattr(board, 'chessboardCorners'):
+        return np.array(board.chessboardCorners)
+    return np.array(board.getChessboardCorners())
+
+
 def board_object_points(board, charuco_ids):
     """3D board-frame coordinates (z=0 plane) for a set of detected
     charuco corner ids, in the same order as charuco_ids."""
-    all_corners = np.array(board.getChessboardCorners())
+    all_corners = get_chessboard_corners(board)
     return all_corners[charuco_ids.flatten()]

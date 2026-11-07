@@ -34,13 +34,13 @@ import yaml
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'common'))
 from charuco_compat import load_board_and_dictionary, detect_charuco, calibrate_camera_charuco  # noqa: E402
-from bag_reader import read_bag, image_msg_to_numpy  # noqa: E402
+from bag_reader import read_bag, image_msg_to_numpy, normalize_to_u8  # noqa: E402
 import custom_board  # noqa: E402
 
 
 def to_gray(img):
     if img.ndim == 2:
-        return img
+        return normalize_to_u8(img)
     return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
 

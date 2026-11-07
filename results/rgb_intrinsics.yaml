@@ -1,0 +1,23 @@
+camera_matrix:
+- - 2108.859953589163
+  - 0.0
+  - 613.5106883186162
+- - 0.0
+  - 2090.019302354951
+  - 250.52456287253727
+- - 0.0
+  - 0.0
+  - 1.0
+distortion_coefficients:
+- -1.3787591262392735
+- 10.217171118255383
+- 0.05659122022428059
+- 0.007663364971577944
+- -92.60331351254082
+image_height: 720
+image_width: 1280
+n_frames_sampled: 27
+n_frames_used: 27
+reprojection_error_px: 0.3272774398219666
+source_bag: /home/vish/SensorCalibration/bags/centre
+source_topic: /landfill/rgb/image_raw

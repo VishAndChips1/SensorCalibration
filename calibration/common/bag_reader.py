@@ -43,19 +43,45 @@ def read_bag(bag_path, topics=None):
 
 
 def image_msg_to_numpy(msg):
-    """sensor_msgs/Image -> HxWxC (or HxW) numpy array. Handles the
-    encodings this project's own camera nodes actually publish (rgb8/
-    bgr8/mono8) -- extend if you add others."""
+    """sensor_msgs/Image -> HxWxC (or HxW) numpy array, in its ORIGINAL
+    dtype (uint8 or uint16, not pre-normalized -- callers that need 8-bit
+    for cv2.aruco detection should normalize explicitly, e.g. via
+    normalize_to_u8 below, so raw values stay available to anything that
+    wants them). Handles the encodings this project's own camera nodes
+    actually publish -- rgb8/bgr8 (RGB camera), mono8 (not currently used
+    but cheap to support), mono16 (this project's thermal camera node:
+    confirmed by hitting this directly on real bag data, not assumed)."""
     import numpy as np
-    arr = np.frombuffer(msg.data, dtype=np.uint8)
     if msg.encoding in ('rgb8', 'bgr8'):
+        arr = np.frombuffer(msg.data, dtype=np.uint8)
         img = arr.reshape(msg.height, msg.width, 3)
         if msg.encoding == 'rgb8':
             img = img[:, :, ::-1]  # -> bgr8, OpenCV's native order
         return img
     if msg.encoding == 'mono8':
+        arr = np.frombuffer(msg.data, dtype=np.uint8)
+        return arr.reshape(msg.height, msg.width)
+    if msg.encoding in ('mono16', '16UC1'):
+        arr = np.frombuffer(msg.data, dtype=np.uint16)
         return arr.reshape(msg.height, msg.width)
     raise ValueError(f'unhandled image encoding: {msg.encoding!r} -- add it to image_msg_to_numpy')
+
+
+def normalize_to_u8(img):
+    """uint16 (or already-uint8) single-channel image -> uint8, via a
+    1st/99th-percentile contrast stretch (robust to a few hot/cold outlier
+    pixels, unlike a plain min/max stretch) -- needed before any cv2.aruco
+    detection call, which requires 8-bit input. No-op if already uint8."""
+    import numpy as np
+    if img.dtype == np.uint8:
+        return img
+    lo, hi = np.percentile(img, [1, 99])
+    if hi <= lo:
+        lo, hi = float(img.min()), float(img.max())
+        if hi <= lo:
+            return np.zeros(img.shape, dtype=np.uint8)
+    stretched = np.clip((img.astype(np.float32) - lo) / (hi - lo) * 255, 0, 255)
+    return stretched.astype(np.uint8)
 
 
 def pointcloud2_to_xyz(msg):

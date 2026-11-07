@@ -31,8 +31,8 @@ import numpy as np
 import yaml
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'common'))
-from charuco_compat import load_board_and_dictionary, detect_charuco  # noqa: E402
-from bag_reader import read_bag, image_msg_to_numpy, pointcloud2_to_xyz  # noqa: E402
+from charuco_compat import load_board_and_dictionary, detect_charuco, get_chessboard_corners  # noqa: E402
+from bag_reader import read_bag, image_msg_to_numpy, pointcloud2_to_xyz, normalize_to_u8  # noqa: E402
 from plane_extrinsic_solver import fit_plane_ransac, solve_extrinsic_from_plane_correspondences  # noqa: E402
 import custom_board  # noqa: E402
 
@@ -44,7 +44,7 @@ def board_pose_from_image_charuco(gray, board, dictionary, camera_matrix, dist_c
     corners, ids, _mc, _mi = detect_charuco(gray, board, dictionary)
     if corners is None or ids is None or len(ids) < 6:
         return None
-    all_board_pts = np.array(board.getChessboardCorners())
+    all_board_pts = get_chessboard_corners(board)
     obj_pts = all_board_pts[ids.flatten()]
     ok, rvec, tvec = cv2.solvePnP(obj_pts, corners, camera_matrix, dist_coeffs)
     if not ok:
@@ -74,8 +74,8 @@ def lidar_plane_in_roi(points, min_range, max_range, board_area_m2, rng):
     roi = points[(ranges > min_range) & (ranges < max_range)]
     if len(roi) < 10:
         raise ValueError(f'only {len(roi)} LiDAR points in the {min_range}-{max_range}m ROI -- '
-                          'widen --lidar-min-range/--lidar-max-range or check the board was '
-                          'actually in the scene for this capture')
+                          'widen the range or check the board was actually in the scene for '
+                          'this capture')
     normal, d, inliers = fit_plane_ransac(roi, inlier_threshold_m=0.02, rng=rng)
     inlier_pts = roi[inliers]
     extent = inlier_pts.max(axis=0) - inlier_pts.min(axis=0)
@@ -98,8 +98,20 @@ def main():
     ap.add_argument('--board-type', choices=['charuco', 'custom'], default='charuco')
     ap.add_argument('--custom-layout',
                      default=os.path.join(os.path.dirname(__file__), '..', 'config', 'custom_board_layout.yaml'))
-    ap.add_argument('--lidar-min-range', type=float, default=1.0)
-    ap.add_argument('--lidar-max-range', type=float, default=6.0)
+    ap.add_argument('--lidar-min-range', type=float, default=None,
+                     help='fixed global ROI instead of the default per-pose auto-window '
+                          '(see --lidar-range-margin) -- use this if auto-windowing picks the '
+                          'wrong surface for every pose')
+    ap.add_argument('--lidar-max-range', type=float, default=None)
+    ap.add_argument('--lidar-range-margin', type=float, default=0.2,
+                     help='default mode: crop LiDAR points to [camera_distance-margin, '
+                          'camera_distance+margin] PER POSE, using the distance already solved '
+                          'from the RGB image -- much tighter than a single global range, and '
+                          'confirmed necessary on real data: a global 0.3-1.5m range still let '
+                          'RANSAC fit a wall instead of a small (~12x18cm) board every single '
+                          'time, even after accumulating all scans in the bag (2500-3700 '
+                          'points) -- the wall simply has more points than the board anywhere '
+                          'the wall is also in range.')
     ap.add_argument('--preview', default=None, help='directory to save per-pose plane-fit plots')
     args = ap.parse_args()
 
@@ -138,19 +150,30 @@ def main():
         print(f'-- pose "{pose_name}" ({bag_path}) --')
 
         cam_result = None
-        lidar_points = None
+        lidar_scans = []
         for topic, msg, _t in read_bag(bag_path, topics=[rgb_topic, lidar_topic]):
             if topic == rgb_topic and cam_result is None:
                 img = image_msg_to_numpy(msg)
-                gray = img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                gray = normalize_to_u8(img) if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
                 if args.board_type == 'charuco':
                     cam_result = board_pose_from_image_charuco(gray, board, dictionary, camera_matrix, dist_coeffs)
                 else:
                     cam_result = board_pose_from_image_custom(gray, dictionary, layout, camera_matrix, dist_coeffs)
-            elif topic == lidar_topic and lidar_points is None:
-                lidar_points = pointcloud2_to_xyz(msg)
-            if cam_result is not None and lidar_points is not None:
-                break
+            elif topic == lidar_topic:
+                # Accumulate EVERY scan in the bag, not just the first.
+                # Livox's non-repetitive scan pattern means a single ~100ms
+                # scan only sparsely covers a small target -- confirmed on
+                # real data: using just the first scan gave 35-60 points
+                # spread in a shape that clearly wasn't the board (see
+                # results/lidar_preview/*.png from that run) and solved to
+                # a physically impossible multi-metre translation. The
+                # board is assumed stationary during the ~6s capture
+                # (that's the whole point of "hold it steady"), so scans
+                # accumulate onto the same real surface rather than
+                # smearing it.
+                lidar_scans.append(pointcloud2_to_xyz(msg))
+
+        lidar_points = np.concatenate(lidar_scans, axis=0) if lidar_scans else None
 
         if cam_result is None:
             print(f'  SKIPPED: no ChArUco board detected on {rgb_topic} in this bag')
@@ -160,9 +183,15 @@ def main():
             continue
 
         nc, dc, rvec, tvec = cam_result
+        cam_distance = float(np.linalg.norm(tvec))
+        if args.lidar_min_range is not None and args.lidar_max_range is not None:
+            min_r, max_r = args.lidar_min_range, args.lidar_max_range
+        else:
+            min_r = max(0.05, cam_distance - args.lidar_range_margin)
+            max_r = cam_distance + args.lidar_range_margin
         try:
             nl, dl, inlier_pts = lidar_plane_in_roi(
-                lidar_points, args.lidar_min_range, args.lidar_max_range, board_area_m2, rng)
+                lidar_points, min_r, max_r, board_area_m2, rng)
         except ValueError as e:
             print(f'  SKIPPED: {e}')
             continue
@@ -178,7 +207,7 @@ def main():
             plt.savefig(os.path.join(args.preview, f'{pose_name}_lidar_plane.png'), dpi=150)
             plt.close()
 
-        print(f'  camera distance to board: {np.linalg.norm(tvec):.2f}m, '
+        print(f'  camera distance to board: {cam_distance:.2f}m (LiDAR ROI: {min_r:.2f}-{max_r:.2f}m), '
               f'LiDAR plane: {len(inlier_pts)} inliers')
         normals_cam.append(nc); d_cam.append(dc)
         normals_lidar.append(nl); d_lidar.append(dl)
