@@ -46,12 +46,45 @@ for pose in $POSES; do
   echo ""
   echo "=== Pose: $pose ==="
   read -p "Position the board, hold it steady, then press Enter to start recording ($DURATION s)... " _
-  ros2 bag record -s mcap -o "$bag_path" $TOPICS &
+  ros2 bag record -s mcap -o "$bag_path" $TOPICS < /dev/null &
   REC_PID=$!
   sleep "$DURATION"
+  # Escalating stop: SIGINT alone was found NOT to reliably stop this
+  # recorder when its stdin isn't a real terminal (it logs "keyboard
+  # handling disabled" in that case, and its normal rclpy SIGINT handler
+  # doesn't seem to engage either) -- a first real recording ran for over
+  # 3 minutes and wrote 3.5GB before this was caught. Never trust a single
+  # signal to actually stop it; always verify and escalate.
   kill -INT $REC_PID 2>/dev/null || true
+  for i in 1 2; do
+    kill -0 $REC_PID 2>/dev/null || break
+    sleep 1
+  done
+  if kill -0 $REC_PID 2>/dev/null; then
+    # Confirmed by testing: SIGINT reliably does NOT stop this recorder in
+    # this backgrounded/non-tty context, but SIGTERM reliably DOES (stops
+    # cleanly, flushes properly) -- this isn't a last-resort path, it's the
+    # normal one. The short SIGINT wait above is just in case that changes
+    # on a different ros2bag version.
+    echo "  (sending SIGTERM...)"
+    kill -TERM $REC_PID 2>/dev/null || true
+    sleep 2
+  fi
+  if kill -0 $REC_PID 2>/dev/null; then
+    echo "  (still alive, forcing with SIGKILL -- this bag's trailing seconds may be unflushed)"
+    kill -9 $REC_PID 2>/dev/null || true
+    sleep 1
+  fi
   wait $REC_PID 2>/dev/null || true
-  echo "Recorded $bag_path"
+  size=$(du -sh "$bag_path" 2>/dev/null | cut -f1)
+  echo "Recorded $bag_path ($size)"
+  if [ -n "$size" ]; then
+    size_mb=$(du -sm "$bag_path" 2>/dev/null | cut -f1)
+    if [ "$size_mb" -gt 200 ]; then
+      echo "  WARNING: $bag_path is ${size}, much bigger than a $DURATION second capture should be" \
+           "-- the stop likely failed again. Check it before trusting this pose's data."
+    fi
+  fi
 done
 
 echo ""
