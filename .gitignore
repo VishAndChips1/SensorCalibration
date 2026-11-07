@@ -3,3 +3,4 @@ __pycache__/
 results/
 board/thermal_contrast_check.png
 .DS_Store
+pipeline_launch.log
