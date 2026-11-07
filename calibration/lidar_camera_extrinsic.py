@@ -14,6 +14,7 @@ Usage:
         --bag far.mcap:/landfill/rgb/image_raw:/landfill/livox/points \\
         --bag left.mcap:... --bag right.mcap:... --bag centre.mcap:...
         [--board config/board_config.yaml]
+        [--board-type charuco|custom] [--custom-layout config/custom_board_layout.yaml]
         [--lidar-min-range 1.0] [--lidar-max-range 6.0]
         [--preview out_dir]
 
@@ -33,9 +34,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'common'))
 from charuco_compat import load_board_and_dictionary, detect_charuco  # noqa: E402
 from bag_reader import read_bag, image_msg_to_numpy, pointcloud2_to_xyz  # noqa: E402
 from plane_extrinsic_solver import fit_plane_ransac, solve_extrinsic_from_plane_correspondences  # noqa: E402
+import custom_board  # noqa: E402
 
 
-def board_pose_from_image(gray, board, dictionary, camera_matrix, dist_coeffs):
+def board_pose_from_image_charuco(gray, board, dictionary, camera_matrix, dist_coeffs):
     """Returns (normal_cam, d_cam, rvec, tvec) for the board's plane in the
     camera frame, from the first good detection found, or None if nothing
     usable was detected."""
@@ -52,6 +54,15 @@ def board_pose_from_image(gray, board, dictionary, camera_matrix, dist_coeffs):
     tvec = tvec.flatten()
     d_cam = normal_cam @ tvec
     return normal_cam, d_cam, rvec, tvec
+
+
+def board_pose_from_image_custom(gray, dictionary, layout, camera_matrix, dist_coeffs):
+    corners, ids = custom_board.detect_markers(gray, dictionary)
+    obj_pts, img_pts = custom_board.correspondences_for_frame(corners, ids, layout)
+    if len(obj_pts) < 6:
+        return None
+    result = custom_board.board_plane_pose(obj_pts, img_pts, camera_matrix, dist_coeffs)
+    return result
 
 
 def lidar_plane_in_roi(points, min_range, max_range, board_area_m2, rng):
@@ -84,16 +95,27 @@ def main():
     ap.add_argument('--bag', action='append', required=True,
                      help='path:rgb_topic:lidar_topic, repeat for each pose (>=3 required)')
     ap.add_argument('--board', default=os.path.join(os.path.dirname(__file__), '..', 'config', 'board_config.yaml'))
+    ap.add_argument('--board-type', choices=['charuco', 'custom'], default='charuco')
+    ap.add_argument('--custom-layout',
+                     default=os.path.join(os.path.dirname(__file__), '..', 'config', 'custom_board_layout.yaml'))
     ap.add_argument('--lidar-min-range', type=float, default=1.0)
     ap.add_argument('--lidar-max-range', type=float, default=6.0)
     ap.add_argument('--preview', default=None, help='directory to save per-pose plane-fit plots')
     args = ap.parse_args()
 
-    with open(args.board) as f:
-        board_cfg = yaml.safe_load(f)
-    board, dictionary = load_board_and_dictionary(board_cfg)
-    board_area_m2 = (board_cfg['squares_x'] * board_cfg['square_length_m']) * \
-                    (board_cfg['squares_y'] * board_cfg['square_length_m'])
+    if args.board_type == 'charuco':
+        with open(args.board) as f:
+            board_cfg = yaml.safe_load(f)
+        board, dictionary = load_board_and_dictionary(board_cfg)
+        board_area_m2 = (board_cfg['squares_x'] * board_cfg['square_length_m']) * \
+                        (board_cfg['squares_y'] * board_cfg['square_length_m'])
+    else:
+        dictionary, layout = custom_board.load_layout(args.custom_layout)
+        # Board extent for the LiDAR-plane sanity check, from the layout's own points
+        # rather than a separate squares_x/squares_y (custom layouts don't have those).
+        all_pts = np.concatenate(list(layout.values()), axis=0)
+        extent = all_pts.max(axis=0) - all_pts.min(axis=0)
+        board_area_m2 = float(np.sort(extent)[-1] * np.sort(extent)[-2])
 
     with open(args.rgb_intrinsics_yaml) as f:
         intr = yaml.safe_load(f)
@@ -121,7 +143,10 @@ def main():
             if topic == rgb_topic and cam_result is None:
                 img = image_msg_to_numpy(msg)
                 gray = img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                cam_result = board_pose_from_image(gray, board, dictionary, camera_matrix, dist_coeffs)
+                if args.board_type == 'charuco':
+                    cam_result = board_pose_from_image_charuco(gray, board, dictionary, camera_matrix, dist_coeffs)
+                else:
+                    cam_result = board_pose_from_image_custom(gray, dictionary, layout, camera_matrix, dist_coeffs)
             elif topic == lidar_topic and lidar_points is None:
                 lidar_points = pointcloud2_to_xyz(msg)
             if cam_result is not None and lidar_points is not None:

@@ -15,6 +15,7 @@ Usage:
     rgb_thermal_stereo.py <rgb_intrinsics.yaml> <thermal_intrinsics.yaml> \\
         <output.yaml> --bag some_bag --rgb-topic ... --thermal-topic ...
         [--board config/board_config.yaml] [--stride 1] [--max-frames 40]
+        [--board-type charuco|custom] [--custom-layout config/custom_board_layout.yaml]
 
 Needs a bag where RGB and thermal both saw the board at the same time --
 any of the 5 capture-protocol bags work, doesn't need a dedicated capture.
@@ -30,6 +31,7 @@ import yaml
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'common'))
 from charuco_compat import load_board_and_dictionary, detect_charuco  # noqa: E402
 from bag_reader import read_bag, image_msg_to_numpy  # noqa: E402
+import custom_board  # noqa: E402
 
 
 def to_gray(img):
@@ -45,6 +47,9 @@ def main():
     ap.add_argument('--rgb-topic', required=True)
     ap.add_argument('--thermal-topic', required=True)
     ap.add_argument('--board', default=os.path.join(os.path.dirname(__file__), '..', 'config', 'board_config.yaml'))
+    ap.add_argument('--board-type', choices=['charuco', 'custom'], default='charuco')
+    ap.add_argument('--custom-layout',
+                     default=os.path.join(os.path.dirname(__file__), '..', 'config', 'custom_board_layout.yaml'))
     ap.add_argument('--max-pairs', type=int, default=40)
     ap.add_argument('--max-time-skew-ms', type=float, default=50.0,
                      help='max gap between an RGB and thermal message to treat them as the '
@@ -52,10 +57,13 @@ def main():
                           'synchronized at the driver level, so some skew is expected')
     args = ap.parse_args()
 
-    with open(args.board) as f:
-        cfg = yaml.safe_load(f)
-    board, dictionary = load_board_and_dictionary(cfg)
-    board_object_points = np.array(board.getChessboardCorners())
+    if args.board_type == 'charuco':
+        with open(args.board) as f:
+            cfg = yaml.safe_load(f)
+        board, dictionary = load_board_and_dictionary(cfg)
+        board_object_points = np.array(board.getChessboardCorners())
+    else:
+        dictionary, layout = custom_board.load_layout(args.custom_layout)
 
     with open(args.rgb_intrinsics_yaml) as f:
         rgb_intr = yaml.safe_load(f)
@@ -100,18 +108,33 @@ def main():
         for rimg, timg in list(try_pairs()):
             n_pairs_tried += 1
             rgray, tgray = to_gray(rimg), to_gray(timg)
-            rc, rids, _, _ = detect_charuco(rgray, board, dictionary)
-            tc, tids, _, _ = detect_charuco(tgray, board, dictionary)
-            if rc is None or tc is None or len(rids) < 6 or len(tids) < 6:
-                continue
-            common_ids = np.intersect1d(rids.flatten(), tids.flatten())
-            if len(common_ids) < 6:
-                continue
-            r_map = {i: c for i, c in zip(rids.flatten(), rc.reshape(-1, 2))}
-            t_map = {i: c for i, c in zip(tids.flatten(), tc.reshape(-1, 2))}
-            obj_points.append(board_object_points[common_ids].astype(np.float32))
-            rgb_points.append(np.array([r_map[i] for i in common_ids], dtype=np.float32))
-            th_points.append(np.array([t_map[i] for i in common_ids], dtype=np.float32))
+
+            if args.board_type == 'charuco':
+                rc, rids, _, _ = detect_charuco(rgray, board, dictionary)
+                tc, tids, _, _ = detect_charuco(tgray, board, dictionary)
+                if rc is None or tc is None or len(rids) < 6 or len(tids) < 6:
+                    continue
+                common_ids = np.intersect1d(rids.flatten(), tids.flatten())
+                if len(common_ids) < 6:
+                    continue
+                r_map = {i: c for i, c in zip(rids.flatten(), rc.reshape(-1, 2))}
+                t_map = {i: c for i, c in zip(tids.flatten(), tc.reshape(-1, 2))}
+                obj_points.append(board_object_points[common_ids].astype(np.float32))
+                rgb_points.append(np.array([r_map[i] for i in common_ids], dtype=np.float32))
+                th_points.append(np.array([t_map[i] for i in common_ids], dtype=np.float32))
+            else:
+                rc, rids = custom_board.detect_markers(rgray, dictionary)
+                tc, tids = custom_board.detect_markers(tgray, dictionary)
+                if rids is None or tids is None:
+                    continue
+                common_ids = [i for i in np.intersect1d(rids.flatten(), tids.flatten()) if i in layout]
+                if len(common_ids) < 2:  # 2 markers = 8 corner correspondences, enough
+                    continue
+                r_map = {i: c.reshape(4, 2) for i, c in zip(rids.flatten(), rc)}
+                t_map = {i: c.reshape(4, 2) for i, c in zip(tids.flatten(), tc)}
+                obj_points.append(np.concatenate([layout[i] for i in common_ids], axis=0).astype(np.float32))
+                rgb_points.append(np.concatenate([r_map[i] for i in common_ids], axis=0).astype(np.float32))
+                th_points.append(np.concatenate([t_map[i] for i in common_ids], axis=0).astype(np.float32))
 
     print(f'{n_pairs_tried} time-synced RGB/thermal frame pairs tried, '
           f'{len(obj_points)} had enough shared ChArUco corners on BOTH cameras.')
