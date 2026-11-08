@@ -1,0 +1,47 @@
+by_n_markers:
+  '1':
+    angle_deg_mean: 15.819829512460739
+    angle_deg_median: 14.573368398869285
+    angle_deg_p90: 27.786952943714002
+    n_samples: 744
+    trans_m_mean: 0.2373238461842611
+    trans_m_median: 0.24309990680822552
+    trans_m_p90: 0.3372050885458554
+  '2':
+    angle_deg_mean: 40.30644548489743
+    angle_deg_median: 39.702326100029566
+    angle_deg_p90: 47.00679307777032
+    n_samples: 744
+    trans_m_mean: 0.2142114933041991
+    trans_m_median: 0.2147085754751052
+    trans_m_p90: 0.32473214097302955
+  '4':
+    angle_deg_mean: 10.239875761198986
+    angle_deg_median: 7.915252112677457
+    angle_deg_p90: 21.595936022110212
+    n_samples: 744
+    trans_m_mean: 0.023993687771014207
+    trans_m_median: 0.012974850691024064
+    trans_m_p90: 0.05785351233619
+  '8':
+    angle_deg_mean: 3.2859559697990015
+    angle_deg_median: 2.3401462327178217
+    angle_deg_p90: 6.224693770904752
+    n_samples: 744
+    trans_m_mean: 0.008359690772973653
+    trans_m_median: 0.006152894075705834
+    trans_m_p90: 0.015344706402354306
+  all:
+    angle_deg_mean: 1.1626503969165152
+    angle_deg_median: 1.2027878461763626
+    angle_deg_p90: 2.1092811641335674
+    n_samples: 93
+    trans_m_mean: 0.0056108900271492484
+    trans_m_median: 0.005646293485062987
+    trans_m_p90: 0.008674193418743103
+n_frames_seen: 93
+n_frames_used: 93
+note: angle/translation error of a pose solved from only N randomly-chosen markers,
+  vs. the same-frame full-detection pose (relative degradation, not absolute ground
+  truth -- both share this run's intrinsics, including its distortion-coefficient
+  uncertainty, see results/STATUS.md).

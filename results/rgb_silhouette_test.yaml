@@ -1,0 +1,7 @@
+aspect_ratio_mean: 1.4276269694937955
+centroid_offset_px_mean: 236.3192409392326
+centroid_offset_px_p90: 450.20362548828126
+detection_rate: 1.0
+expected_aspect_ratio: 1.4285714285714286
+n_frames: 93
+n_quad_found: 93

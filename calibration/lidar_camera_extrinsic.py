@@ -31,29 +31,27 @@ import numpy as np
 import yaml
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'common'))
-from charuco_compat import load_board_and_dictionary, detect_charuco, get_chessboard_corners  # noqa: E402
+from charuco_compat import load_board_and_dictionary, estimate_board_pose  # noqa: E402
 from bag_reader import read_bag, image_msg_to_numpy, pointcloud2_to_xyz, normalize_to_u8  # noqa: E402
 from plane_extrinsic_solver import fit_plane_ransac, solve_extrinsic_from_plane_correspondences  # noqa: E402
 import custom_board  # noqa: E402
 
 
 def board_pose_from_image_charuco(gray, board, dictionary, camera_matrix, dist_coeffs):
-    """Returns (normal_cam, d_cam, rvec, tvec) for the board's plane in the
-    camera frame, from the first good detection found, or None if nothing
-    usable was detected."""
-    corners, ids, _mc, _mi = detect_charuco(gray, board, dictionary)
-    if corners is None or ids is None or len(ids) < 6:
+    """Returns (normal_cam, d_cam, rvec, tvec, method) for the board's plane
+    in the camera frame, from the first good detection found (full ChArUco,
+    or a >=8-marker-only fallback for longer range -- see
+    charuco_compat.estimate_board_pose), or None if nothing usable was
+    detected."""
+    result = estimate_board_pose(gray, board, dictionary, camera_matrix, dist_coeffs)
+    if result is None:
         return None
-    all_board_pts = get_chessboard_corners(board)
-    obj_pts = all_board_pts[ids.flatten()]
-    ok, rvec, tvec = cv2.solvePnP(obj_pts, corners, camera_matrix, dist_coeffs)
-    if not ok:
-        return None
+    rvec, tvec, method, _n = result
     R_board_to_cam, _ = cv2.Rodrigues(rvec)
     normal_cam = R_board_to_cam @ np.array([0, 0, 1.0])  # board's local +Z, into camera frame
     tvec = tvec.flatten()
     d_cam = normal_cam @ tvec
-    return normal_cam, d_cam, rvec, tvec
+    return normal_cam, d_cam, rvec, tvec, method
 
 
 def board_pose_from_image_custom(gray, dictionary, layout, camera_matrix, dist_coeffs):
@@ -176,13 +174,14 @@ def main():
         lidar_points = np.concatenate(lidar_scans, axis=0) if lidar_scans else None
 
         if cam_result is None:
-            print(f'  SKIPPED: no ChArUco board detected on {rgb_topic} in this bag')
+            print(f'  SKIPPED: no usable board pose on {rgb_topic} in this bag '
+                  '(neither a full ChArUco detection nor >=8 decoded markers)')
             continue
         if lidar_points is None:
             print(f'  SKIPPED: no LiDAR message found on {lidar_topic} in this bag')
             continue
 
-        nc, dc, rvec, tvec = cam_result
+        nc, dc, rvec, tvec, cam_method = cam_result
         cam_distance = float(np.linalg.norm(tvec))
         if args.lidar_min_range is not None and args.lidar_max_range is not None:
             min_r, max_r = args.lidar_min_range, args.lidar_max_range
@@ -207,8 +206,8 @@ def main():
             plt.savefig(os.path.join(args.preview, f'{pose_name}_lidar_plane.png'), dpi=150)
             plt.close()
 
-        print(f'  camera distance to board: {cam_distance:.2f}m (LiDAR ROI: {min_r:.2f}-{max_r:.2f}m), '
-              f'LiDAR plane: {len(inlier_pts)} inliers')
+        print(f'  camera distance to board: {cam_distance:.2f}m via {cam_method} '
+              f'(LiDAR ROI: {min_r:.2f}-{max_r:.2f}m), LiDAR plane: {len(inlier_pts)} inliers')
         normals_cam.append(nc); d_cam.append(dc)
         normals_lidar.append(nl); d_lidar.append(dl)
         pose_names.append(pose_name)

@@ -91,4 +91,4 @@ def board_plane_pose(obj_pts, img_pts, camera_matrix, dist_coeffs):
     normal_cam = R_board_to_cam @ np.array([0, 0, 1.0])
     tvec = tvec.flatten()
     d_cam = normal_cam @ tvec
-    return normal_cam, d_cam, rvec, tvec
+    return normal_cam, d_cam, rvec, tvec, 'custom'

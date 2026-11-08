@@ -1,0 +1,11 @@
+aspect_ratio_mean: 1.3449055684095663
+detection_rate: 1.0
+expected_aspect_ratio: 1.4285714285714286
+n_pairs_crosschecked: 168
+n_quad_found: 577
+n_thermal_frames: 577
+normal_angle_err_deg_mean: 32.471646717839526
+normal_angle_err_deg_p90: 56.3400533526513
+note: cross-check uses an uncalibrated thermal-intrinsics placeholder (fx=fy=919,
+  PitFusion3D_repo's own pre-existing rough guess) -- not a real accuracy number,
+  see docstring.

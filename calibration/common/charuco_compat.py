@@ -87,3 +87,51 @@ def board_object_points(board, charuco_ids):
     charuco corner ids, in the same order as charuco_ids."""
     all_corners = get_chessboard_corners(board)
     return all_corners[charuco_ids.flatten()]
+
+
+def estimate_board_pose(gray_image, board, dictionary, camera_matrix, dist_coeffs,
+                         min_full_corners=6, min_markers_fallback=8):
+    """Board pose (rvec, tvec) in the camera frame, trying the accurate
+    full-ChArUco path first and falling back to a marker-only PnP when
+    too few markers were seen close enough together to interpolate any
+    chessboard corner (common at longer range, where markers decode
+    sparsely/non-contiguously instead of all failing together).
+
+    The min_markers_fallback=8 default is not a guess: a 2026-11-08 test
+    (see SensorCalibration/calibration/marker_subset_pose_test.py and
+    results/CALIBRATION_METHODS_TEST.md) measured normal-direction/
+    translation error from N-marker-only PnP against full-detection
+    ground truth, on this project's real captured data: 1 marker ~16deg/
+    237mm (unusable), 4 markers ~10deg/24mm (marginal), 8 markers ~3deg/
+    8mm (usable for plane-correspondence extrinsics, which only needs a
+    decent normal+distance, not survey-grade pose), full detection
+    ~1deg/6mm. 8 is the lowest N that test found consistently usable.
+
+    Returns (rvec, tvec, method, n_markers_or_corners) or None if neither
+    path has enough data. method is 'full_charuco' or 'marker_fallback'.
+    """
+    corners, ids, marker_corners, marker_ids = detect_charuco(gray_image, board, dictionary)
+    if corners is not None and ids is not None and len(ids) >= min_full_corners:
+        obj_pts = board_object_points(board, ids)
+        ok, rvec, tvec = cv2.solvePnP(obj_pts, corners, camera_matrix, dist_coeffs)
+        if ok:
+            return rvec, tvec, 'full_charuco', int(len(ids))
+
+    if marker_ids is not None and len(marker_ids) >= min_markers_fallback:
+        board_ids_list = list(np.array(board.ids).flatten()) if hasattr(board, 'ids') \
+            else list(range(len(board.objPoints)))
+        obj_pts, img_pts = [], []
+        for mid, mc in zip(marker_ids.flatten(), marker_corners):
+            if int(mid) not in board_ids_list:
+                continue
+            idx = board_ids_list.index(int(mid))
+            obj_pts.append(np.array(board.objPoints[idx], dtype=np.float32))
+            img_pts.append(mc.reshape(4, 2).astype(np.float32))
+        if len(obj_pts) >= min_markers_fallback:
+            obj_pts = np.concatenate(obj_pts, axis=0)
+            img_pts = np.concatenate(img_pts, axis=0)
+            ok, rvec, tvec = cv2.solvePnP(obj_pts, img_pts, camera_matrix, dist_coeffs)
+            if ok:
+                return rvec, tvec, 'marker_fallback', int(len(marker_ids))
+
+    return None
