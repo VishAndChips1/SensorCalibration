@@ -95,13 +95,18 @@ python3 board/check_thermal_contrast.py
 # 3. Capture the 5 poses (needs the pipeline running live)
 ./capture/record_calibration_bags.sh bags/ 15
 
-# 4. RGB intrinsics (pick any one bag, centre is a reasonable default)
+# 4. RGB intrinsics -- pool ALL 5 poses, not just one bag. A single bag/
+#    distance under-constrains the distortion coefficients (fx/fy/cx/cy
+#    converge fine from one bag, but k2/k3 don't -- see the script's
+#    docstring). Always pass every bag you have for a result you'll trust.
 python3 calibration/charuco_camera_calibrate.py \
-    bags/centre /landfill/rgb/image_raw results/rgb_intrinsics.yaml
+    bags/close bags/far bags/left bags/right bags/centre \
+    /landfill/rgb/image_raw results/rgb_intrinsics.yaml
 
-# 5. Thermal intrinsics -- same script, different topic
+# 5. Thermal intrinsics -- same script, different topic, same pooling advice
 python3 calibration/charuco_camera_calibrate.py \
-    bags/centre /landfill/thermal/image_raw results/thermal_intrinsics.yaml
+    bags/close bags/far bags/left bags/right bags/centre \
+    /landfill/thermal/image_raw results/thermal_intrinsics.yaml
 
 # 6. LiDAR -> RGB extrinsics, using all 5 poses
 python3 calibration/lidar_camera_extrinsic.py \
