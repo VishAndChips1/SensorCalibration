@@ -1,0 +1,8 @@
+# Plain checkerboard used for the 5 bag recordings
+type: checkerboard
+squares_x: 5        # columns
+squares_y: 7        # rows
+square_size_m: 0.058
+inner_corners_x: 4  # squares_x - 1
+inner_corners_y: 6  # squares_y - 1
+top_left_square: black
